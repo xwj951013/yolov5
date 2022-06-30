@@ -50,7 +50,7 @@ head:
 
    [-1, 1, GhostConv, [512, 3, 2]],
    [[-1, 16], 1, Concat, [1]],  # cat head P5
-   [-1, 3, GhostC3, [768, False]],  # 29 (P5/32-large)
+   [-1, 3, C3Ghost, [768, False]],  # 29 (P5/32-large)
 
    [-1, 1, GhostConv, [768, 3, 2]],
    [[-1, 12], 1, Concat, [1]],  # cat head P6
