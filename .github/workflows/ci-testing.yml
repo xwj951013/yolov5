@@ -21,7 +21,7 @@ jobs:
         model: [yolov5n]
     steps:
       - uses: actions/checkout@v3
-      - uses: actions/setup-python@v3
+      - uses: actions/setup-python@v4
         with:
           python-version: ${{ matrix.python-version }}
       #- name: Cache pip
@@ -32,14 +32,14 @@ jobs:
       #    restore-keys: ${{ runner.os }}-Benchmarks-
       - name: Install requirements
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip wheel
           pip install -r requirements.txt coremltools openvino-dev tensorflow-cpu --extra-index-url https://download.pytorch.org/whl/cpu
           python --version
           pip --version
           pip list
       - name: Run benchmarks
         run: |
-          python utils/benchmarks.py --weights ${{ matrix.model }}.pt --img 320
+          python utils/benchmarks.py --weights ${{ matrix.model }}.pt --img 320 --hard-fail
 
   Tests:
     timeout-minutes: 60
@@ -62,7 +62,7 @@ jobs:
             model: yolov5n
     steps:
       - uses: actions/checkout@v3
-      - uses: actions/setup-python@v3
+      - uses: actions/setup-python@v4
         with:
           python-version: ${{ matrix.python-version }}
       - name: Get cache dir
@@ -77,7 +77,7 @@ jobs:
           restore-keys: ${{ runner.os }}-${{ matrix.python-version }}-pip-
       - name: Install requirements
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip wheel
           pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cpu
           python --version
           pip --version
@@ -89,6 +89,8 @@ jobs:
           echo "GITHUB_EVENT_NAME is $GITHUB_EVENT_NAME"
           echo "GITHUB_WORKFLOW is $GITHUB_WORKFLOW"
           echo "GITHUB_ACTOR is $GITHUB_ACTOR"
+          echo "GITHUB_REPOSITORY is $GITHUB_REPOSITORY"
+          echo "GITHUB_REPOSITORY_OWNER is $GITHUB_REPOSITORY_OWNER"
       - name: Run tests
         shell: bash
         run: |
