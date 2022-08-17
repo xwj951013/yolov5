@@ -793,4 +793,3 @@ class CBAM(nn.Module):
         # c*h*w * 1*h*w
         out = self.spatial_attention(out) * out
         return out
-
