@@ -881,3 +881,169 @@ class C3ECA(C3):
         c_ = int(c2 * e)  # hidden channels
         self.m = nn.Sequential(*(ECABottleneck(c_, c_, shortcut) for _ in range(n)))
 
+# BiFPN-Begin------------------------------------------------------------
+# 两个分支add操作
+class BiFPN_Add2(nn.Module):
+    def __init__(self, c1, c2):
+        super(BiFPN_Add2, self).__init__()
+        # 设置可学习参数 nn.Parameter的作用是：将一个不可训练的类型Tensor转换成可以训练的类型parameter
+        # 并且会向宿主模型注册该参数 成为其一部分 即model.parameters()会包含这个parameter
+        # 从而在参数优化的时候可以自动一起优化
+        self.w = nn.Parameter(torch.ones(2, dtype=torch.float32), requires_grad=True)
+        self.epsilon = 0.0001
+        self.conv = nn.Conv2d(c1, c2, kernel_size=1, stride=1, padding=0)
+        self.silu = nn.SiLU()
+
+    def forward(self, x):
+        w = self.w
+        weight = w / (torch.sum(w, dim=0) + self.epsilon)
+        return self.conv(self.silu(weight[0] * x[0] + weight[1] * x[1]))
+
+# 三个分支add操作
+class BiFPN_Add3(nn.Module):
+    def __init__(self, c1, c2):
+        super(BiFPN_Add3, self).__init__()
+        self.w = nn.Parameter(torch.ones(3, dtype=torch.float32), requires_grad=True)
+        self.epsilon = 0.0001
+        self.conv = nn.Conv2d(c1, c2, kernel_size=1, stride=1, padding=0)
+        self.silu = nn.SiLU()
+
+    def forward(self, x):
+        w = self.w
+        weight = w / (torch.sum(w, dim=0) + self.epsilon)  # 将权重进行归一化
+        # Fast normalized fusion
+        return self.conv(self.silu(weight[0] * x[0] + weight[1] * x[1] + weight[2] * x[2]))
+# BiFPN-End--------------------------------------------------------------
+
+# mobileone------------start
+def conv_bn(in_channels, out_channels, kernel_size, stride, padding, groups=1):
+    result = nn.Sequential()
+    result.add_module('conv', nn.Conv2d(in_channels=in_channels, out_channels=out_channels,
+                                                  kernel_size=kernel_size, stride=stride, padding=padding, groups=groups, bias=False))
+    result.add_module('bn', nn.BatchNorm2d(num_features=out_channels))
+    return result
+
+class DepthWiseConv(nn.Module):
+    def __init__(self, inc, kernel_size, stride=1):
+        super().__init__()
+        padding = 1
+        if kernel_size == 1:
+            padding = 0
+        # self.conv = nn.Sequential(
+        #     nn.Conv2d(inc, inc, kernel_size, stride, padding, groups=inc, bias=False,),
+        #     nn.BatchNorm2d(inc),
+        # )
+        self.conv = conv_bn(inc, inc,kernel_size, stride, padding, inc)
+
+    def forward(self, x):
+        return self.conv(x)
+    
+
+class PointWiseConv(nn.Module):
+    def __init__(self, inc, outc):
+        super().__init__()
+        # self.conv = nn.Sequential(
+        #     nn.Conv2d(inc, outc, 1, 1, 0, bias=False),
+        #     nn.BatchNorm2d(outc),
+        # )
+        self.conv = conv_bn(inc, outc, 1, 1, 0)
+    def forward(self, x):
+        return self.conv(x)
+
+
+
+class MobileOneBlock(nn.Module):
+
+    def __init__(self, in_channels, out_channels, k,
+                 stride=1, dilation=1, padding_mode='zeros', deploy=False, use_se=False):
+        super(MobileOneBlock, self).__init__()
+        self.deploy = deploy
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.deploy = deploy
+        kernel_size = 3
+        padding = 1
+        assert kernel_size == 3
+        assert padding == 1
+        self.k = k
+        padding_11 = padding - kernel_size // 2
+
+        self.nonlinearity = nn.ReLU()
+
+        if use_se:
+            # self.se = SEBlock(out_channels, internal_neurons=out_channels // 16)
+            ...
+        else:
+            self.se = nn.Identity()
+
+        if deploy:
+            self.dw_reparam = nn.Conv2d(in_channels=in_channels, out_channels=in_channels, kernel_size=kernel_size, stride=stride,
+                                      padding=padding, dilation=dilation, groups=in_channels, bias=True, padding_mode=padding_mode)
+            self.pw_reparam = nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=1, stride=1, bias=True)
+
+        else:
+            # self.rbr_identity = nn.BatchNorm2d(num_features=in_channels) if out_channels == in_channels and stride == 1 else None
+            # self.rbr_dense = conv_bn(in_channels=in_channels, out_channels=out_channels, kernel_size=kernel_size, stride=stride, padding=padding, groups=groups)
+            # self.rbr_1x1 = conv_bn(in_channels=in_channels, out_channels=out_channels, kernel_size=1, stride=stride, padding=padding_11, groups=groups)
+            # print('RepVGG Block, identity = ', self.rbr_identity)
+            self.dw_bn_layer = nn.BatchNorm2d(in_channels) if out_channels == in_channels and stride == 1 else None
+            for k_idx in range(k):
+                setattr(self, f'dw_3x3_{k_idx}', 
+                    DepthWiseConv(in_channels, 3, stride=stride)
+                )
+            self.dw_1x1 = DepthWiseConv(in_channels, 1, stride=stride)
+
+            self.pw_bn_layer = nn.BatchNorm2d(in_channels) if out_channels == in_channels and stride == 1 else None
+            for k_idx in range(k):
+                setattr(self, f'pw_1x1_{k_idx}', 
+                    PointWiseConv(in_channels, out_channels)
+                )
+
+    def forward(self, inputs):
+        if self.deploy:
+            x = self.dw_reparam(inputs)
+            x = self.nonlinearity(x)
+            x = self.pw_reparam(x)
+            x = self.nonlinearity(x)
+            return x
+
+        if self.dw_bn_layer is None:
+            id_out = 0
+        else:
+            id_out = self.dw_bn_layer(inputs)
+        
+        x_conv_3x3 = []
+        for k_idx in range(self.k):
+            x = getattr(self, f'dw_3x3_{k_idx}')(inputs)
+            x_conv_3x3.append(x)
+        x_conv_1x1 = self.dw_1x1(inputs)
+        # print(x_conv_1x1.shape, x_conv_3x3[0].shape)
+        # print(x_conv_1x1.shape)
+        # print(id_out)
+        x = id_out + x_conv_1x1 + sum(x_conv_3x3)
+        x = self.nonlinearity(self.se(x))
+
+         # 1x1 conv
+        if self.pw_bn_layer is None:
+            id_out = 0
+        else:
+            id_out = self.pw_bn_layer(x)
+        x_conv_1x1 = []
+        for k_idx in range(self.k):
+            x_conv_1x1.append(getattr(self, f'pw_1x1_{k_idx}')(x))
+        x = id_out + sum(x_conv_1x1)
+        x = self.nonlinearity(x)
+        return x
+        
+class MobileOne(nn.Module):
+    # MobileOne
+    def __init__(self, in_channels, out_channels, n, k,
+                 stride=1, dilation=1, padding_mode='zeros', deploy=False, use_se=False):
+        super().__init__()
+        self.m = nn.Sequential(*[MobileOneBlock(in_channels, out_channels, k, stride, deploy) for _ in range(n)])
+
+    def forward(self, x):
+        x = self.m(x)
+        return x
+
+#mobileone--------------------end
